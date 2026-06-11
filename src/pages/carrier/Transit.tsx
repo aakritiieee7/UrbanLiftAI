@@ -8,7 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { MapPin, Package, Clock, Route, Navigation, MapPinIcon, CheckCircle, AlertCircle, Target } from "lucide-react";
-import { match } from "@/lib/matching";
+import { match } from "@/lib/logistics/pooling";
+import { logShipmentEvent } from "@/lib/timeline/audit-logger";
+import { validateTransition } from "@/lib/dispatch/state-machine";
 
 interface Shipment {
   id: string;
@@ -146,6 +148,20 @@ const Transit = () => {
   }, [userId]);
 
   const updateShipmentStatus = async (shipmentId: string, status: string) => {
+    const shipmentObj = assignedShipments.find(j => j.id === shipmentId);
+    const currentStatus = shipmentObj ? shipmentObj.status : "assigned";
+
+    try {
+      validateTransition(currentStatus, status);
+    } catch (err: any) {
+      toast({
+        title: "Invalid Status Transition",
+        description: err.message,
+        variant: "destructive"
+      });
+      return;
+    }
+
     const { error } = await supabase
       .from("shipments")
       .update({ status })
@@ -156,6 +172,27 @@ const Transit = () => {
       toast({ title: "Error", description: "Failed to update shipment status" });
     } else {
       toast({ title: "Success", description: `Shipment ${status}` });
+
+      // Log audit timeline event
+      try {
+        if (status === "in_transit" || status === "delivered") {
+          const title = status === "in_transit" ? "Shipment In Transit" : "Shipment Delivered";
+          const description = status === "in_transit" 
+            ? "Carrier picked up cargo and started transit." 
+            : "Cargo successfully delivered to destination.";
+          
+          const meta: any = {};
+          if (currentLocation) {
+            meta.lat = currentLocation.lat;
+            meta.lng = currentLocation.lng;
+          }
+
+          await logShipmentEvent(shipmentId, status, title, description, meta);
+        }
+      } catch (err) {
+        console.error("Failed to log transit event:", err);
+      }
+
       loadAssignedShipments();
     }
   };

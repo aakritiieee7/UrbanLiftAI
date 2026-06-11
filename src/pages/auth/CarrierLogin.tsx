@@ -48,7 +48,7 @@ const CarrierLogin = () => {
       return;
     }
     toast({ title: "Welcome!", description: "Logged in successfully." });
-    navigate(profile.role === "shipper" ? "/dashboard" : "/carrier/home");
+    navigate(profile.role === "shipper" ? "/shipper/home" : "/carrier/home");
   };
 
   return (

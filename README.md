@@ -14,54 +14,51 @@ An open, Delhi-focused logistics web app that connects MSME shippers with verifi
 | ![Homepage](public/homepage.png) | ![Shipper](public/shipper.png) | ![Carrier](public/carrier.png) | ![USP](public/novelty.png) |
 
 ---
-## Why this project (Delhi context)
+## Why this project
 - MSMEs in NCR/Delhi face fragmented capacity, variable rates, and reliability gaps for both last‑mile and line‑haul.
 - Carriers struggle to keep utilization high across peak/off‑peak and find direct MSME contracts.
 - This app bridges demand and supply with transparent workflows, instant quoting, simple tracking, and community trust signals (leaderboard, profiles).
 
 
 ## Key features
-- Dual user flows: separate auth and dashboards for Shippers and Carriers
-- Shipment lifecycle: create, quote, dispatch, and track basic shipments
-- Live map and picker: Leaflet-based interactive map and origin/destination selection
-- Smart matching helpers: deterministic helpers for route/price suggestions in src/lib/matching.ts
-- Dashboards: at‑a‑glance stats, recent shipments, quick actions, and live map card
-- Community and Leaderboard: social proof, recognition, and engagement for NCR/Delhi logistics
-- Responsive UI: mobile-first, semantic tokens for light/dark theming
-- Supabase integration: auth, database, and storage ready out‑of‑the‑box
+- **Dual user flows**: separate auth and dashboards for Shippers and Carriers.
+- **Shipment lifecycle**: create, quote, dispatch, and track shipments.
+- **Live map and picker**: Leaflet-based interactive map and origin/destination selection.
+- **AI Dispatch Assistant (MCDA Matching)**: Factors in proximity (35%), capacity fit (25%), reputation & experience (20%), and carrier reliability scores (20%) using a multi-criteria scoring engine in `src/lib/dispatch/recommender.ts`.
+- **Recommendation Explanation Panel**: Displays visual score breakdown progress bars on recommendations cards so shippers can verify matching components (Proximity, Capacity, Reputation, Reliability).
+- **Dispatch State Machine (FSM)**: Enforces strict sequential transitions (`pending` ➔ `assigned` ➔ `in_transit` ➔ `delivered`) via `src/lib/dispatch/state-machine.ts` to guarantee shipment state integrity.
+- **Chronological Shipment Audit Timeline**: Renders a vertical log timeline of shipment milestones (allocation, pickup, transit logs, delivery signatures).
+- **Smart Notification Center**: Features a real-time header bell dropdown in the navbar showing unread badges, read/delete actions, and navigation shortcuts to view shipments.
+- **Operations Analytics Dashboard**: Consolidates freight patterns, direct vs pooled run ratios, and carrier performance charts.
+- **Route Optimization & K-Means Pooling**: Consolidates deliveries with matching bearings and overlapping pick-up times into pooled runs.
+- **Community and Leaderboard**: Social proof, recognition, and gamification points for NCR/Delhi logistics.
+- **Responsive UI**: Mobile-first, semantic tokens for light/dark theming.
+- **Supabase integration**: Auth, database proxying, and storage fallback ready out‑of‑the‑box.
 
-
-## Screens and routes
-- Home: /
-- Auth:
-  - Shippers: /auth/shipper/login, /auth/shipper/register
-  - Carriers: /auth/carrier/login, /auth/carrier/register
-- Dashboards: /dashboard/shipper, /dashboard/carrier
-- Community: /pages/Community.tsx route (linked in navbar)
-- Leaderboard: /pages/Leaderboard.tsx route (linked in navbar)
-- Profile & setup: /profile, /profile-setup
-- Not found: 404 fallback
 
 
 ## Tech stack
 - React 18 + Vite + TypeScript
-- Tailwind CSS with semantic tokens (index.css, tailwind.config.ts)
+- Tailwind CSS with semantic tokens (`index.css`, `tailwind.config.ts`)
 - shadcn-ui + Radix Primitives
 - React Router v6
 - React Query (TanStack) for data fetching/cache
 - Leaflet + React-Leaflet for maps
 - Recharts for dashboard visualizations
-- Supabase (auth, DB, storage)
+- Supabase (auth, DB, storage) + browser LocalStorage Proxy Client fallback
 
 
 ## Project structure (high-level)
-- src/pages: top-level routed pages (Home, Community, Leaderboard, Auth, Dashboards)
-- src/components: reusable building blocks (LiveMap, MapPicker, dashboard cards, UI)
-- src/components/ui: shadcn components and primitives
-- src/hooks: shared hooks (auth, toasts, mobile)
-- src/lib: small utilities (matching helpers, auth helpers)
-- src/assets: theme images used by the UI
-- src/integrations/supabase: client initialization
+- `src/pages`: top-level routed pages (Home, Auth, Shippers/Carriers workspaces, Ops Analytics)
+- `src/components`: reusable building blocks (LiveMap, MapPicker, Navbar, dashboard cards)
+- `src/components/ui`: shadcn components and primitives
+- `src/hooks`: shared hooks (auth, toasts, mobile)
+- `src/lib`: core utilities and algorithms:
+  - `src/lib/dispatch`: recommender match scoring (`recommender.ts`) and finite state machine validations (`state-machine.ts`)
+  - `src/lib/logistics`: Haversine math and K-Means pooling logic (`pooling.ts`)
+  - `src/lib/timeline`: chronological events logging and push notification triggers (`audit-logger.ts`)
+- `src/assets`: theme images used by the UI
+- `src/integrations/supabase`: client initialization and connection fallback proxy
 
 
 ## Setup and development
@@ -97,65 +94,16 @@ npm run preview
 ```
 - Preview starts a local static server and prints the URL in the console.
 
+6) Run local test suites
+```
+npx tsx src/lib/dispatch/state-machine.test.ts
+npx tsx src/lib/dispatch/recommender.test.ts
+```
 
-## Data model and Supabase notes
-- Authentication: email/password via Supabase; see src/hooks/useAuth.ts and src/integrations/supabase/client.ts.
-- Example tables you may use/extend:
-  - profiles (user role: shipper|carrier, company name, KYC fields)
-  - shipments (shipper_id, status, origin, destination, price, created_at)
-  - carrier_assignments (shipment_id, carrier_id, accepted_at)
-  - leaderboard (user_id, points, rank, last_updated)
-- Security: enable Row Level Security (RLS). Ensure each table restricts access by auth.uid().
-- Storage: optional bucket for documents (e.g., RC/insurance). Apply policies per role.
+## Future Operational Features
 
-
-## Theming and design system
-- Use semantic tokens, not raw hex colors.
-- Tailwind tokens live in tailwind.config.ts and CSS variables in src/index.css.
-- Extend shadcn variants (e.g., hero, premium) in src/components/ui/button.tsx rather than inline overrides.
-- Keep one H1 per page, semantic sections, and responsive typography.
-
-
-## Maps and geolocation
-- LiveMap and MapPicker use Leaflet and React-Leaflet.
-- If you add tile providers (e.g., Mapbox), store API keys securely; don’t hardcode secrets.
-
-
-## Delhi-focused UX guidance
-- Imagery: Prefer real Delhi/NCR logistics visuals (warehousing at Okhla/Bawana, NH48/24 corridors, ICD Tughlakabad).
-- Language: Keep CTAs crisp for MSME shippers and independent carriers.
-- Color: Use high-contrast tokens; avoid hard-coded whites/blacks.
-- Performance: Lazy load non-critical media; keep LCP focused on hero.
-
-
-## Roadmap (suggested)
-- Shipment quoting: transparent rate cards with corridor-based surcharges (NCR, Jaipur, Agra lanes)
-- Live capacity heatmap for carriers
-- In-app chat between shipper and assigned carrier
-- Milestone tracking: pickup, in-transit, delivered with Proof of Delivery upload
-- Notifications: email/SMS for key events
-- Dispute and feedback workflows; reputation scores feeding the leaderboard
-
-
-## Contribution
-1) Fork or create a branch
-2) Follow design tokens and shadcn variants; no inline color overrides
-3) Write accessible, semantic JSX (single H1 per page)
-4) Add tests where feasible; keep components small and focused
-5) Open a PR describing scope and screenshots
-
-
-## FAQ
-- Can I swap images? Yes. Put assets in src/assets and reference via import. Use descriptive alt text.
-- How do I change the hero background or the map background image? Update the imports in src/pages/Index.tsx and ensure loading="lazy" for non-critical images.
-- How do I add new UI variants? Extend component variants (e.g., buttons) instead of inline class overrides.
-
-
-## License
-MIT License. See LICENSE if present; otherwise treat this repo as MIT-licensed for development and experimentation.
-
-
-## Acknowledgements
-- Delhi/NCR logistics ecosystem insights and public corridor information
-- Leaflet contributors for the excellent open map tooling
-- shadcn-ui and Radix teams for accessible UI primitives
+- **Live Capacity Heatmap for Carriers**: Help drivers identify high-demand pickup zones in Bawana, Okhla, and Narela to minimize empty-mile routes.
+- **In-App Shipper-Carrier Chat**: Direct messaging between shippers and assigned carriers to coordinate gate entries and warehouse queues.
+- **Milestone Proof of Delivery (PoD)**: Enable drivers to upload digital signatures and consignee delivery receipts.
+- **Dynamic Traffic Rerouting**: Real-time traffic alerts on main corridors (NH-48, Outer Ring Road) suggesting alternative paths during peak congestion.
+- **Carrier Rewards Store**: Allow commercial drivers to redeem accrued leaderboard performance points for fuel discount vouchers.

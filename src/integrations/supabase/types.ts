@@ -42,6 +42,10 @@ export type Database = {
           website: string | null
           years_experience: number | null
           zip_code: string | null
+          reliability_score: number | null
+          acceptance_rate: number | null
+          completion_rate: number | null
+          on_time_performance: number | null
         }
         Insert: {
           auth_email?: string | null
@@ -70,6 +74,10 @@ export type Database = {
           website?: string | null
           years_experience?: number | null
           zip_code?: string | null
+          reliability_score?: number | null
+          acceptance_rate?: number | null
+          completion_rate?: number | null
+          on_time_performance?: number | null
         }
         Update: {
           auth_email?: string | null
@@ -98,6 +106,10 @@ export type Database = {
           website?: string | null
           years_experience?: number | null
           zip_code?: string | null
+          reliability_score?: number | null
+          acceptance_rate?: number | null
+          completion_rate?: number | null
+          on_time_performance?: number | null
         }
         Relationships: []
       }
@@ -398,6 +410,77 @@ export type Database = {
           shipper_id?: string
           status?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      shipment_events: {
+        Row: {
+          created_at: string
+          event_description: string
+          event_title: string
+          event_type: string
+          id: string
+          metadata: Json | null
+          shipment_id: string
+        }
+        Insert: {
+          created_at?: string
+          event_description: string
+          event_title: string
+          event_type: string
+          id?: string
+          metadata?: Json | null
+          shipment_id: string
+        }
+        Update: {
+          created_at?: string
+          event_description?: string
+          event_title?: string
+          event_type?: string
+          id?: string
+          metadata?: Json | null
+          shipment_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shipment_events_shipment_id_fkey"
+            columns: ["shipment_id"]
+            isOneToOne: false
+            referencedRelation: "shipments"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      notifications: {
+        Row: {
+          created_at: string
+          id: string
+          message: string
+          read: boolean
+          shipment_id: string | null
+          title: string
+          type: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          message: string
+          read?: boolean
+          shipment_id?: string | null
+          title: string
+          type: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          message?: string
+          read?: boolean
+          shipment_id?: string | null
+          title?: string
+          type?: string
+          user_id?: string
         }
         Relationships: []
       }

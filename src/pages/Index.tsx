@@ -92,6 +92,16 @@ const Index = () => {
                     Join as Carrier
                   </Button>
                 </Link>
+                <Link to="/ops/analytics">
+                  <Button 
+                    size="xl" 
+                    variant="outline"
+                    className="bg-amber-500/10 border-amber-400/30 text-amber-300 hover:bg-amber-500/20 backdrop-blur-sm hover:scale-105 transition-all duration-300"
+                  >
+                    <BarChart3 className="mr-2 animate-pulse" />
+                    Ops Monitor
+                  </Button>
+                </Link>
               </div>
             </div>
           </div>

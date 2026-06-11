@@ -1,11 +1,42 @@
+# Dependencies
+node_modules/
+.npm-cache/
 
-# Environment variables and secrets
+# Local env files
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+.env.production
 *.env
+
+# Build outputs
+dist/
+build/
+
+# Testing
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+
+# IDEs
+.idea/
+.vscode/
+
+# Logs
+logs/
+*.log
+
+# temporary exports and generated artifacts
+artifacts/
+temp/
+*.tmp
+*.temp
 
 # API keys and configuration files
 config/secrets.json
@@ -21,24 +52,6 @@ config/production.json
 *.sqlite3
 database.json
 
-# Build artifacts that may contain secrets
+# Build artifacts
 .vercel
 .netlify
-
-# OS generated files
-Thumbs.db
-.DS_Store?
-ehthumbs.db
-Icon?
-
-# IDE and editor files
-.vscode/settings.json
-.vscode/launch.json
-*.swp
-*.swo
-*~
-
-# Temporary files
-*.tmp
-*.temp
-.cache/

@@ -6,11 +6,13 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/componen
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import LocationPicker, { LocationData } from "@/components/shipment/LocationPicker";
-import { clusterShipments, type Shipment as AlgoShipment } from "@/lib/matching";
+import { clusterShipments, type Shipment as AlgoShipment } from "@/lib/logistics/pooling";
 import { useAuth } from "@/contexts/AuthContext";
 import { Badge } from "@/components/ui/badge";
 import { Clock, User, Loader2, Star, Truck, CreditCard } from "lucide-react";
 import RazorpayPayment from "@/components/payment/RazorpayPayment";
+import { rankAndScoreCarriers } from "@/lib/dispatch/recommender";
+import { logShipmentEvent } from "@/lib/timeline/audit-logger";
 
 type ProcessingStep = 'form' | 'creating' | 'pooling' | 'matching' | 'selection' | 'payment' | 'tracking';
 
@@ -36,6 +38,12 @@ interface CarrierProfile {
   whyRecommended?: string[];
   calculatedCost?: number;
   baseMultiplier?: number;
+  breakdown?: {
+    proximity: number;
+    capacity: number;
+    reputation: number;
+    reliability: number;
+  };
 }
 
 export const ShipmentForm = ({ onCreated }: { onCreated?: () => void }) => {
@@ -105,7 +113,10 @@ export const ShipmentForm = ({ onCreated }: { onCreated?: () => void }) => {
           vehicle_capacity_kg,
           years_experience,
           service_areas,
-          service_regions
+          service_regions,
+          last_known_lat,
+          last_known_lng,
+          average_rating
         `);
 
       console.log('Supabase query result:', { carriers, error });
@@ -122,48 +133,37 @@ export const ShipmentForm = ({ onCreated }: { onCreated?: () => void }) => {
 
       console.log(`Found ${carriers.length} carriers in database`);
 
-      // Calculate distance and score for each carrier
-      const carriersWithMetrics = carriers.map(carrier => {
-        // Calculate distance (using random locations for demo since we don't have carrier locations)
-        const distance = 10 + Math.random() * 20; // 10-30km range
-        
-        // Calculate score based on capacity match, experience, etc.
-        const actualCapacity = carrier.vehicle_capacity_kg;
-        const capacityMatch = (!actualCapacity || actualCapacity >= requiredCapacity) ? 1 : 0.5;
-        const experienceScore = Math.min((carrier.years_experience || 1) / 10, 1);
-        const score = (capacityMatch * 0.6 + experienceScore * 0.4) * (0.8 + Math.random() * 0.2);
+      // Convert database formats
+      const carrierInputs = carriers.map(c => ({
+        user_id: c.user_id,
+        business_name: c.business_name || c.company_name || 'Carrier',
+        company_name: c.company_name,
+        phone: c.phone || c.contact_phone || 'Not provided',
+        contact_phone: c.contact_phone,
+        vehicle_type: c.vehicle_type || c.vehicle_types || 'Vehicle',
+        vehicle_types: c.vehicle_types,
+        vehicle_capacity_kg: c.vehicle_capacity_kg,
+        years_experience: c.years_experience,
+        last_known_lat: c.last_known_lat ? Number(c.last_known_lat) : null,
+        last_known_lng: c.last_known_lng ? Number(c.last_known_lng) : null,
+        average_rating: c.average_rating ? Number(c.average_rating) : null
+      }));
 
-        return {
-          user_id: carrier.user_id,
-          business_name: carrier.business_name || carrier.company_name || 'Carrier',
-          phone: carrier.phone || carrier.contact_phone || 'Not provided',
-          vehicle_type: carrier.vehicle_type || carrier.vehicle_types || 'Vehicle',
-          vehicle_capacity_kg: actualCapacity, // Keep the actual value (null or number)
-          years_experience: carrier.years_experience || 1,
-          distance,
-          score
-        };
-      });
+      // Calculate distances, scores, pricing, reasons
+      const ranked = rankAndScoreCarriers(
+        {
+          origin_lat: originLat,
+          origin_lng: originLng,
+          capacity_kg: requiredCapacity,
+        },
+        carrierInputs
+      );
 
-      // Filter by capacity requirement and sort by score (treat null capacity as unlimited)
-      const filteredCarriers = carriersWithMetrics
-        .filter(carrier => {
-          const capacity = carrier.vehicle_capacity_kg;
-          console.log(`Filtering carrier ${carrier.user_id}: capacity=${capacity}, required=${requiredCapacity}`);
-          // If capacity is null/undefined, treat as unlimited capacity (carrier can handle any size)
-          if (!capacity) {
-            console.log(`Carrier ${carrier.user_id} has unlimited capacity - ACCEPTED`);
-            return true;
-          }
-          // Otherwise check if capacity meets requirement
-          const accepted = capacity >= (requiredCapacity || 0);
-          console.log(`Carrier ${carrier.user_id} capacity check: ${capacity} >= ${requiredCapacity || 0} = ${accepted}`);
-          return accepted;
-        })
-        .sort((a, b) => b.score - a.score);
-      
-      console.log(`Final filtered carriers: ${filteredCarriers.length} out of ${carriersWithMetrics.length}`);
-      return filteredCarriers;
+      return ranked.map(c => ({
+        ...c,
+        assignmentScore: c.score,
+        assignmentReasons: c.whyRecommended
+      }));
         
     } catch (error) {
       console.error('Failed to fetch carriers:', error);
@@ -270,99 +270,17 @@ export const ShipmentForm = ({ onCreated }: { onCreated?: () => void }) => {
     );
     
     if (availableCarriers.length > 0) {
-        // Calculate real pricing for each carrier
-    const enhancedCarriers = availableCarriers.map((carrier, index) => {
-      const reasons = [];
-      
-      // Calculate cost for this specific carrier
-      const weightCost = (Number(capacityKg) || 0) * 10;
-      const distanceCost = (carrier.distance || 0) * 5;
-      const basePrice = 50;
-      let baseCost = basePrice + weightCost + distanceCost;
-      let finalMultiplier = 1.0;
-      
-      // Experience Level Adjustments
-      const yearsExp = carrier.years_experience || 0;
-      if (yearsExp < 0.5) {
-        finalMultiplier *= 0.8;
-        reasons.push(`New driver discount - 20% off`);
-      } else if (yearsExp >= 2) {
-        finalMultiplier *= 1.1;
-        reasons.push(`${yearsExp}+ years experienced - premium service`);
-      } else {
-        reasons.push(`${yearsExp} years of reliable service`);
-      }
-      
-      // Rating-based Pricing (using score instead of rating)
-      const rating = (carrier.score || 0.6) * 5; // Convert score to 5-star rating
-      if (rating >= 5) {
-        finalMultiplier *= 1.15;
-        reasons.push("5-star rated driver - premium quality");
-      } else if (rating >= 4) {
-        finalMultiplier *= 1.05;
-        reasons.push("Highly rated 4+ star service");
-      } else if (rating < 4) {
-        finalMultiplier *= 0.9;
-        reasons.push("Competitive pricing - good value");
-      }
-      
-      // Vehicle Type Adjustments
-      const vehicleType = carrier.vehicle_type || 'medium';
-      if (vehicleType === 'light') {
-        finalMultiplier *= 0.9;
-        reasons.push("Light vehicle - eco-friendly & economical");
-      } else if (vehicleType === 'heavy' || vehicleType === 'container') {
-        finalMultiplier *= 1.2;
-        reasons.push("Heavy duty vehicle - secure transport");
-      }
-      
-      // Distance Adjustments
-      if ((carrier.distance || 0) >= 50) {
-        finalMultiplier *= 0.95;
-        reasons.push("Long distance discount - 5% off");
-      } else if ((carrier.distance || 0) < 10) {
-        finalMultiplier *= 1.05;
-        reasons.push("Quick local pickup - premium convenience");
-      }
-      
-      // Distance reason
-      if (carrier.distance! <= 15) {
-        reasons.push(`Only ${carrier.distance?.toFixed(1)}km away - quick pickup`);
-      }
-      
-      const finalCost = Math.round(baseCost * finalMultiplier);
-      
-      // Capacity reason
-      const reqCapacity = Number(capacityKg) || 0;
-      if (carrier.vehicle_capacity_kg) {
-        if (carrier.vehicle_capacity_kg >= reqCapacity * 2) {
-          reasons.push("Extra capacity for secure transport");
-        } else {
-          reasons.push("Perfect capacity match for your shipment");
-        }
-      } else {
-        reasons.push("Flexible capacity - handles all shipment sizes");
-      }
-      
-      // Vehicle type reason
-      if (carrier.vehicle_type?.toLowerCase().includes("truck")) {
-        reasons.push("Heavy-duty vehicle for safe delivery");
-      } else {
-        reasons.push("Efficient commercial vehicle");
-      }
-      
-      return {
+      const enhancedCarriers = availableCarriers.map((carrier, index) => ({
         ...carrier,
         isRecommended: index === 0,
-        whyRecommended: reasons,
-        calculatedCost: finalCost,
-        baseMultiplier: finalMultiplier
-      };
-    });
+        whyRecommended: carrier.whyRecommended || [],
+        assignmentScore: carrier.score,
+        assignmentReasons: carrier.whyRecommended || []
+      }));
       
-      setCarriers(enhancedCarriers.slice(0, 5)); // Show top 5 carriers
+      setCarriers(enhancedCarriers); // Show all matched carriers
       
-      // Auto-select the recommended carrier
+      // Auto-select the recommended carrier (the top ranked match)
       setSelectedCarrier(enhancedCarriers[0]);
       
       toast({ 
@@ -453,166 +371,270 @@ export const ShipmentForm = ({ onCreated }: { onCreated?: () => void }) => {
   }
 
   if (currentStep === 'selection' && carriers.length > 0) {
-    const recommended = carriers[0];
-    const alternatives = carriers.slice(1); // Show all remaining carriers
-    const savingsPercentage = 18; // Consistent 18% savings
-    const reliabilityScore = 94; // Consistent 94% reliability
+    const recommendations = carriers.slice(0, 3);
+    const alternatives = carriers.slice(3);
+
+    const getRecommendationStyles = (index: number) => {
+      switch (index) {
+        case 0:
+          return {
+            border: "border-2 border-amber-400 dark:border-amber-500/60 shadow-lg shadow-amber-100/30 dark:shadow-none",
+            bg: "bg-gradient-to-br from-amber-50/90 via-orange-50/40 to-yellow-50/60 dark:from-amber-950/35 dark:via-orange-950/15 dark:to-yellow-950/25",
+            badge: "bg-gradient-to-r from-amber-500 to-yellow-500 text-white font-bold",
+            badgeText: "⭐ 1st MATCH - RECOMMENDED",
+            avatar: "bg-gradient-to-br from-amber-500 to-yellow-500 text-white border-amber-200"
+          };
+        case 1:
+          return {
+            border: "border-2 border-slate-300 dark:border-slate-600 shadow-md",
+            bg: "bg-gradient-to-br from-slate-50/90 via-zinc-50/40 to-slate-100/50 dark:from-slate-900/30 dark:via-zinc-900/10 dark:to-slate-950/20",
+            badge: "bg-gradient-to-r from-slate-400 to-slate-500 text-white font-bold",
+            badgeText: "🥈 2nd MATCH",
+            avatar: "bg-gradient-to-br from-slate-400 to-slate-500 text-white border-slate-200"
+          };
+        case 2:
+          return {
+            border: "border-2 border-orange-300 dark:border-orange-700/60 shadow-md",
+            bg: "bg-gradient-to-br from-orange-50/80 via-amber-50/30 to-orange-100/40 dark:from-orange-950/25 dark:via-amber-950/10 dark:to-orange-950/15",
+            badge: "bg-gradient-to-r from-orange-400 to-amber-600 text-white font-bold",
+            badgeText: "🥉 3rd MATCH",
+            avatar: "bg-gradient-to-br from-orange-400 to-amber-600 text-white border-orange-200"
+          };
+        default:
+          return {
+            border: "border border-border",
+            bg: "bg-card",
+            badge: "bg-secondary text-secondary-foreground",
+            badgeText: "MATCH",
+            avatar: "bg-secondary text-foreground border-border"
+          };
+      }
+    };
 
     return (
-      <Card className="border-primary/20 shadow-xl">
-        <CardHeader className="pb-4">
-          <CardTitle className="text-xl font-bold">Choose Your Carrier</CardTitle>
-          <p className="text-muted-foreground">AI-matched carriers based on your requirements</p>
+      <Card className="border-primary/20 shadow-xl overflow-hidden backdrop-blur-sm bg-white/95 dark:bg-black/95">
+        <CardHeader className="pb-4 border-b border-primary/10 bg-gradient-to-r from-primary/5 via-transparent to-primary/5">
+          <CardTitle className="text-2xl font-bold flex items-center gap-2">
+            🤖 AI Dispatch Assistant
+          </CardTitle>
+          <p className="text-muted-foreground text-sm">
+            Smart carrier recommendations optimized for your cargo weight, Delhi traffic patterns, and driver experience.
+          </p>
         </CardHeader>
-        <CardContent className="space-y-6">
-          {/* Recommended Carrier */}
-          <div className="relative overflow-hidden rounded-2xl border-2 border-gradient-to-r from-amber-400/60 to-orange-400/60 bg-gradient-to-br from-amber-50 via-orange-50/50 to-yellow-50 dark:from-amber-950/40 dark:via-orange-950/30 dark:to-yellow-950/40 shadow-lg hover:shadow-2xl transition-all duration-300 group">
-            <div className="absolute -top-1 -right-1">
-              <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-white font-semibold px-4 py-2 rounded-bl-xl rounded-tr-2xl text-sm">
-                ⭐ RECOMMENDED
-              </div>
-            </div>
+        
+        <CardContent className="p-6 space-y-6">
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold text-foreground flex items-center gap-2">
+              ✨ Top Recommended Carriers
+            </h3>
             
-            <div className="p-6 pt-8">
-              <div className="flex items-start gap-4 mb-5">
-                {/* Driver Avatar */}
-                <div className="relative">
-                  <div className="w-20 h-20 rounded-full bg-gradient-to-br from-primary via-primary/90 to-primary/80 flex items-center justify-center text-white font-bold text-2xl border-4 border-white shadow-lg">
-                    {recommended.business_name?.charAt(0) || 'C'}
-                  </div>
-                  <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-green-500 rounded-full border-2 border-white flex items-center justify-center">
-                    <div className="w-2 h-2 bg-white rounded-full"></div>
-                  </div>
-                </div>
+            <div className="grid gap-6">
+              {recommendations.map((carrier, index) => {
+                const styles = getRecommendationStyles(index);
+                const scorePct = Math.round((carrier.score || 0) * 100);
+                const rating = carrier.average_rating || 5.0;
                 
-                <div className="flex-1">
-                  <h4 className="text-xl font-bold text-foreground mb-1">{recommended.business_name || 'Professional Carrier'}</h4>
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="flex items-center gap-1">
-                      <Star className="h-4 w-4 fill-yellow-400 text-yellow-400" />
-                      <span className="font-semibold text-yellow-700 dark:text-yellow-400">{(recommended.score! * 5).toFixed(1)}</span>
+                return (
+                  <div 
+                    key={carrier.user_id}
+                    className={`relative overflow-hidden rounded-2xl transition-all duration-300 hover:scale-[1.01] hover:shadow-xl ${styles.border} ${styles.bg}`}
+                  >
+                    {/* Recommendation Badge */}
+                    <div className="absolute top-0 right-0">
+                      <div className={`${styles.badge} px-4 py-1.5 rounded-bl-xl text-xs uppercase tracking-wider shadow-sm`}>
+                        {styles.badgeText}
+                      </div>
                     </div>
-                    <Badge variant="secondary" className="bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">
-                      {reliabilityScore}% Reliable
-                    </Badge>
-                    <span className="text-sm text-muted-foreground">{recommended.years_experience}+ years</span>
+                    
+                    <div className="p-6 pt-8">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <div className="flex items-start gap-4">
+                          {/* Driver Icon */}
+                          <div className={`w-16 h-16 rounded-full flex items-center justify-center font-bold text-xl border-2 shadow-inner shrink-0 ${styles.avatar}`}>
+                            {carrier.business_name?.charAt(0) || 'C'}
+                          </div>
+                          
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h4 className="text-lg font-bold text-foreground">
+                                {carrier.business_name || 'Professional Carrier'}
+                              </h4>
+                              <Badge className="bg-primary/10 text-primary hover:bg-primary/20 border-none font-semibold text-xs">
+                                {scorePct}% Match
+                              </Badge>
+                            </div>
+                            
+                            <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+                              <div className="flex items-center gap-1 text-sm font-medium text-yellow-600 dark:text-yellow-400">
+                                <Star className="h-4 w-4 fill-yellow-400 text-yellow-400" />
+                                <span>{rating.toFixed(1)}</span>
+                              </div>
+                              <span className="text-xs text-muted-foreground">•</span>
+                              <span className="text-sm text-muted-foreground">{carrier.years_experience || 1} years exp</span>
+                              <span className="text-xs text-muted-foreground">•</span>
+                              <Badge variant="outline" className="text-[10px] py-0 border-primary/20 bg-background/50">
+                                🚛 {carrier.vehicle_type || 'Commercial Van'}
+                              </Badge>
+                            </div>
+                            
+                            <p className="text-xs text-muted-foreground mt-1.5">
+                              📱 {carrier.phone || 'Contact via dashboard'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Price Details */}
+                        <div className="text-left md:text-right border-t md:border-t-0 pt-3 md:pt-0 flex md:flex-col justify-between items-center md:items-end">
+                          <span className="text-xs text-muted-foreground uppercase tracking-wider block">Estimated Price</span>
+                          <div className="text-3xl font-extrabold text-primary">
+                            ₹{carrier.calculatedCost?.toLocaleString() || '1,200'}
+                          </div>
+                          {carrier.baseMultiplier && carrier.baseMultiplier !== 1.0 && (
+                            <span className={`text-xs font-semibold ${carrier.baseMultiplier < 1 ? 'text-green-600 dark:text-green-400' : 'text-orange-600 dark:text-orange-400'}`}>
+                              {carrier.baseMultiplier < 1 ? 'Save' : 'Premium'} {Math.round(Math.abs(1 - carrier.baseMultiplier) * 100)}% Applied
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Score Breakdown Progress Bars */}
+                      {carrier.breakdown && (
+                        <div className="mt-4 space-y-2.5 bg-white/50 dark:bg-black/25 p-3 rounded-xl border border-primary/5">
+                          <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+                            📊 Matching Factors Score Breakdown
+                          </div>
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                            <div className="space-y-1">
+                              <div className="flex justify-between text-[10px] text-muted-foreground font-medium">
+                                <span>Proximity (35%)</span>
+                                <span>{Math.round(carrier.breakdown.proximity * 100)}%</span>
+                              </div>
+                              <div className="w-full bg-muted rounded-full h-1 overflow-hidden">
+                                <div 
+                                  className="bg-blue-500 h-1 rounded-full transition-all duration-500" 
+                                  style={{ width: `${Math.round(carrier.breakdown.proximity * 100)}%` }}
+                                />
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className="flex justify-between text-[10px] text-muted-foreground font-medium">
+                                <span>Capacity (25%)</span>
+                                <span>{Math.round(carrier.breakdown.capacity * 100)}%</span>
+                              </div>
+                              <div className="w-full bg-muted rounded-full h-1 overflow-hidden">
+                                <div 
+                                  className="bg-emerald-500 h-1 rounded-full transition-all duration-500" 
+                                  style={{ width: `${Math.round(carrier.breakdown.capacity * 100)}%` }}
+                                />
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className="flex justify-between text-[10px] text-muted-foreground font-medium">
+                                <span>Reputation (20%)</span>
+                                <span>{Math.round(carrier.breakdown.reputation * 100)}%</span>
+                              </div>
+                              <div className="w-full bg-muted rounded-full h-1 overflow-hidden">
+                                <div 
+                                  className="bg-amber-500 h-1 rounded-full transition-all duration-500" 
+                                  style={{ width: `${Math.round(carrier.breakdown.reputation * 100)}%` }}
+                                />
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className="flex justify-between text-[10px] text-muted-foreground font-medium">
+                                <span>Reliability (20%)</span>
+                                <span>{Math.round(carrier.breakdown.reliability * 100)}%</span>
+                              </div>
+                              <div className="w-full bg-muted rounded-full h-1 overflow-hidden">
+                                <div 
+                                  className="bg-indigo-500 h-1 rounded-full transition-all duration-500" 
+                                  style={{ width: `${Math.round(carrier.breakdown.reliability * 100)}%` }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* AI Reasoning Panel */}
+                      <div className="mt-5 p-4 rounded-xl bg-white/75 dark:bg-black/45 border border-primary/10">
+                        <div className="flex items-center gap-2 mb-2 text-xs font-semibold text-primary">
+                          <span>🤖</span>
+                          <span>Dispatch Factors:</span>
+                        </div>
+                        <ul className="grid gap-1.5">
+                          {(carrier.whyRecommended || []).map((reason, i) => (
+                            <li key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
+                              <span className="text-primary mt-0.5">•</span>
+                              <span>{reason}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      {/* Selection Action Button */}
+                      <div className="mt-5">
+                        <Button 
+                          onClick={() => selectCarrier(carrier)}
+                          className="w-full font-bold shadow-md transition-all duration-300 hover:shadow-lg hover:scale-[1.01]"
+                          variant={index === 0 ? "default" : "outline"}
+                          size="lg"
+                        >
+                          Select {carrier.business_name || 'Carrier'}
+                        </Button>
+                      </div>
+                    </div>
                   </div>
-                  <div className="text-sm text-muted-foreground">
-                    📱 {recommended.phone || '+91-98765-43210'} • 🚛 {recommended.vehicle_type || 'Commercial Van'}
-                  </div>
-                </div>
-                
-                  <div className="text-3xl font-bold text-primary mb-2">
-                    ₹{recommended.calculatedCost?.toLocaleString() || '1,200'}
-                  </div>
-                  <div className="text-sm text-muted-foreground flex items-center gap-1">
-                    {recommended.baseMultiplier && recommended.baseMultiplier !== 1.0 && (
-                      <>
-                        <span className="line-through">₹{Math.round((recommended.calculatedCost || 1200) / recommended.baseMultiplier).toLocaleString()}</span>
-                        <span className={`font-semibold ${recommended.baseMultiplier < 1 ? 'text-green-600' : 'text-orange-600'}`}>
-                          {recommended.baseMultiplier < 1 ? 'Save' : 'Premium'} {Math.round(Math.abs(1 - recommended.baseMultiplier) * 100)}%
-                        </span>
-                      </>
-                    )}
-                  </div>
-              </div>
-              
-              {/* Why Recommended */}
-              <div className="bg-gradient-to-r from-white/80 to-yellow-50/80 dark:from-gray-800/60 dark:to-yellow-950/40 rounded-xl p-4 mb-5 border border-amber-200/50 dark:border-amber-800/30">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center">
-                    <span className="text-white text-xs">✨</span>
-                  </div>
-                  <span className="font-semibold text-amber-700 dark:text-amber-300">Smart AI Assignment:</span>
-                </div>
-                <p className="text-sm text-amber-800 dark:text-amber-200">
-                  {recommended.whyRecommended && recommended.whyRecommended.length > 0 
-                    ? recommended.whyRecommended.join(' • ') 
-                    : `Optimized route • Best pricing • High reliability score • ${recommended.distance?.toFixed(1)}km away`
-                  }
-                </p>
-                {recommended.assignmentScore && (
-                  <div className="mt-2 text-xs text-amber-600 dark:text-amber-400">
-                    🤖 AI Match Score: {Math.round(recommended.assignmentScore * 100)}%
-                  </div>
-                )}
-              </div>
-              
-              <Button 
-                onClick={() => selectCarrier(recommended)}
-                size="lg"
-                className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-bold py-4 text-lg shadow-lg hover:shadow-xl transition-all duration-300 group-hover:scale-[1.02]"
-              >
-                Accept Recommended Carrier
-              </Button>
+                );
+              })}
             </div>
           </div>
 
-          {/* Alternative Carriers - Show all remaining carriers */}
+          {/* Alternatives Accordion/Collapsible */}
           {alternatives.length > 0 && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h4 className="text-lg font-semibold text-foreground">Other Available Carriers</h4>
-                <Badge variant="outline" className="text-xs">
-                  {alternatives.length} more options
-                </Badge>
-              </div>
-              
-              <div className="space-y-4">
+            <div className="pt-4 border-t border-primary/10 space-y-3">
+              <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+                Other Available Carriers ({alternatives.length})
+              </h4>
+              <div className="grid gap-3">
                 {alternatives.map((carrier, index) => (
-                    <div 
-                      key={carrier.user_id}
-                      onClick={() => selectCarrier(carrier)}
-                      className="group p-5 rounded-xl border border-border hover:border-primary/40 bg-card hover:shadow-lg transition-all duration-300 cursor-pointer"
-                    >
-                    <div className="flex items-start gap-4">
-                      <div className="w-14 h-14 rounded-full bg-gradient-to-br from-secondary to-secondary/80 flex items-center justify-center text-foreground font-bold text-lg">
+                  <div 
+                    key={carrier.user_id}
+                    onClick={() => selectCarrier(carrier)}
+                    className="flex items-center justify-between p-4 rounded-xl border border-border bg-card/50 hover:bg-card hover:border-primary/40 transition-all duration-200 cursor-pointer group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center text-sm font-bold text-secondary-foreground">
                         {carrier.business_name?.charAt(0) || 'C'}
                       </div>
-                      
-                      <div className="flex-1">
-                        <h5 className="font-semibold text-lg text-foreground mb-1">{carrier.business_name || `Carrier ${index + 2}`}</h5>
-                        <div className="flex items-center gap-3 mb-2">
-                          <div className="flex items-center gap-1">
-                            <Star className="h-4 w-4 fill-yellow-400 text-yellow-400" />
-                            <span className="font-medium text-yellow-600 dark:text-yellow-400">{(carrier.score! * 5).toFixed(1)}</span>
-                          </div>
-                          <span className="text-sm text-muted-foreground">{carrier.years_experience}+ years</span>
-                          <Badge variant="secondary" className="text-xs">
-                            {Math.round(80 + Math.random() * 15)}% reliable
-                          </Badge>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h5 className="font-semibold text-sm group-hover:text-primary transition-colors">
+                            {carrier.business_name}
+                          </h5>
+                          <span className="text-xs text-muted-foreground">•</span>
+                          <span className="text-xs text-yellow-600 dark:text-yellow-400 font-medium">
+                            ⭐ {(carrier.average_rating || 5.0).toFixed(1)}
+                          </span>
                         </div>
-                        <div className="text-sm text-muted-foreground mb-3">
-                          📱 {carrier.phone || "+91-98765-43210"} • 🚛 {carrier.vehicle_type || "Commercial Vehicle"}
-                        </div>
-                        
-                        {/* Why This Carrier */}
-                        {carrier.assignmentReasons && carrier.assignmentReasons.length > 0 && (
-                          <div className="bg-secondary/30 rounded-lg p-3 mt-3">
-                            <p className="text-xs font-medium text-secondary-foreground mb-2">Why choose this carrier:</p>
-                            <div className="flex flex-wrap gap-1">
-                              {carrier.assignmentReasons.map((reason, i) => (
-                                <span key={i} className="text-xs bg-background/60 text-foreground px-2 py-1 rounded-full border">
-                                  {reason}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                        <p className="text-xs text-muted-foreground">
+                          {carrier.vehicle_type} • {carrier.distance?.toFixed(1)}km away
+                        </p>
                       </div>
-                      
-                        <div className="text-xl font-bold text-foreground">
-                          ₹{carrier.calculatedCost?.toLocaleString() || '1,200'}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {carrier.baseMultiplier && carrier.baseMultiplier !== 1.0 ? (
-                            carrier.baseMultiplier < 1 ? 
-                              `${Math.round((1 - carrier.baseMultiplier) * 100)}% cheaper` : 
-                              `${Math.round((carrier.baseMultiplier - 1) * 100)}% premium`
-                          ) : 'Standard rate'}
-                        </div>
                     </div>
+                    
+                    <div className="text-right">
+                      <div className="font-bold text-sm text-foreground">
+                        ₹{carrier.calculatedCost?.toLocaleString()}
+                      </div>
+                      <span className="text-[10px] text-muted-foreground">
+                        {Math.round((carrier.score || 0) * 100)}% match
+                      </span>
                     </div>
+                  </div>
                 ))}
               </div>
             </div>
@@ -622,13 +644,74 @@ export const ShipmentForm = ({ onCreated }: { onCreated?: () => void }) => {
     );
   }
 
-  const handlePaymentSuccess = (shipment: any) => {
+  const handlePaymentSuccess = async (shipment: any) => {
     setShipmentId(shipment.id);
     setCurrentStep('tracking');
     toast({
       title: "Payment Successful! 🎉",
       description: "Your shipment has been created and carrier assigned.",
     });
+
+    try {
+      // 1. Log Shipment Created Event
+      await logShipmentEvent(
+        shipment.id,
+        'created',
+        'Shipment Created',
+        `Shipper created shipment order of ${shipment.capacity_kg || 0} kg.`,
+        {
+          origin: shipment.origin,
+          destination: shipment.destination,
+          weight_kg: shipment.capacity_kg
+        }
+      );
+
+      // 2. Log AI Match Recommendations Event
+      if (carriers && carriers.length > 0) {
+        const recommendations = carriers.slice(0, 5).map(c => ({
+          carrier_name: c.business_name || c.company_name || 'Carrier',
+          score: c.assignmentScore || c.score || 0,
+          reason: c.whyRecommended && c.whyRecommended.length > 0 
+            ? c.whyRecommended[0] 
+            : `${c.years_experience || 1} years experience, ${c.vehicle_type}`
+        }));
+        
+        await logShipmentEvent(
+          shipment.id,
+          'recommended',
+          'AI Match Recommendations Calculated',
+          `AI Dispatch Assistant evaluated available carriers and suggested ${carriers[0]?.business_name || 'best matches'}.`,
+          { recommendations }
+        );
+      }
+
+      // 3. Log Carrier Assigned Event
+      if (selectedCarrier) {
+        // Calculate price
+        const weightCost = (shipment.capacity_kg || 0) * 10;
+        const originLat = origin?.lat || 28.6304;
+        const originLng = origin?.lng || 77.2177;
+        const destLat = destination?.lat || 28.6304;
+        const destLng = destination?.lng || 77.2177;
+        const distanceKm = calculateDistance(originLat, originLng, destLat, destLng);
+        const distanceCost = distanceKm * 5;
+        const totalAmount = Math.round(weightCost + distanceCost);
+
+        await logShipmentEvent(
+          shipment.id,
+          'assigned',
+          'Carrier Assigned',
+          `${selectedCarrier.business_name} was selected and assigned.`,
+          {
+            carrier_id: selectedCarrier.user_id,
+            carrier_name: selectedCarrier.business_name,
+            final_cost: selectedCarrier.calculatedCost || totalAmount
+          }
+        );
+      }
+    } catch (err) {
+      console.error("Failed to log shipment creation events:", err);
+    }
   };
 
   const handlePaymentFailure = () => {

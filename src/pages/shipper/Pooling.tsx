@@ -5,7 +5,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { clusterShipments, type Shipment as AlgoShipment } from "@/lib/matching";
+import { clusterShipments, type Shipment as AlgoShipment } from "@/lib/logistics/pooling";
 import { useAuth } from "@/contexts/AuthContext";
 import { Package, Users, Clock, MapPin } from "lucide-react";
 

@@ -33,6 +33,7 @@ function parseCoordinates(coordStr: string): LatLngExpression | null {
 interface LiveMapProps {
   userRole?: 'shipper' | 'carrier';
   showDelivered?: boolean;
+  shipmentId?: string;
 }
 
 const delhiCenter: LatLngExpression = [28.6139, 77.2090];
@@ -42,9 +43,10 @@ const AnyTileLayer = TileLayer as any;
 const AnyCircleMarker = CircleMarker as any;
 const AnyPolyline = Polyline as any;
 
-const LiveMap = ({ userRole = 'shipper', showDelivered = true }: LiveMapProps) => {
+const LiveMap = ({ userRole = 'shipper', showDelivered = true, shipmentId }: LiveMapProps) => {
   const [shipments, setShipments] = useState<Shipment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [mapCenter, setMapCenter] = useState<LatLngExpression>(delhiCenter);
   const { userId } = useAuth();
 
   useEffect(() => {
@@ -58,8 +60,10 @@ const LiveMap = ({ userRole = 'shipper', showDelivered = true }: LiveMapProps) =
             origin_address, destination_address
           `);
 
-        // Filter based on user role
-        if (userRole === 'carrier') {
+        // Filter based on user role or single shipment ID
+        if (shipmentId) {
+          query = query.eq("id", shipmentId);
+        } else if (userRole === 'carrier') {
           query = query.eq("carrier_id", userId || "");
           if (!showDelivered) {
             query = query.neq("status", "delivered");
@@ -70,14 +74,27 @@ const LiveMap = ({ userRole = 'shipper', showDelivered = true }: LiveMapProps) =
 
         const { data, error } = await query
           .order("created_at", { ascending: false })
-          .limit(10);
+          .limit(shipmentId ? 1 : 10);
 
         if (error) {
           console.error("Error fetching shipments:", error);
           return;
         }
 
-        setShipments(data || []);
+        const list = data || [];
+        setShipments(list);
+
+        if (list.length > 0) {
+          const first = list[0];
+          if (first.origin_lat !== null && first.origin_lng !== null) {
+            setMapCenter([first.origin_lat, first.origin_lng]);
+          } else {
+            const parsed = parseCoordinates(first.origin);
+            if (parsed) {
+              setMapCenter(parsed);
+            }
+          }
+        }
       } catch (error) {
         console.error("Error:", error);
       } finally {
@@ -88,7 +105,7 @@ const LiveMap = ({ userRole = 'shipper', showDelivered = true }: LiveMapProps) =
     if (userId) {
       fetchShipments();
     }
-  }, [userId, userRole, showDelivered]);
+  }, [userId, userRole, showDelivered, shipmentId]);
 
   if (loading) {
     return (
@@ -114,8 +131,9 @@ const LiveMap = ({ userRole = 'shipper', showDelivered = true }: LiveMapProps) =
   return (
     <div className="w-full overflow-hidden rounded-lg border bg-card">
       <AnyMapContainer
-        center={delhiCenter}
-        zoom={11}
+        key={JSON.stringify(mapCenter)}
+        center={mapCenter}
+        zoom={shipmentId ? 12 : 11}
         scrollWheelZoom={false}
         className="h-[420px] w-full"
       >

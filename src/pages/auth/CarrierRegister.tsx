@@ -91,7 +91,7 @@ const CarrierRegister = () => {
 
     setLoading(false);
     toast({ title: "Welcome aboard!", description: "Carrier registration successful!" });
-    navigate("/carrier-dashboard");
+    navigate("/carrier/home");
   };
 
   return (

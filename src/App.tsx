@@ -11,15 +11,10 @@ import ShipperLogin from "./pages/auth/ShipperLogin";
 import ShipperRegister from "./pages/auth/ShipperRegister";
 import CarrierLogin from "./pages/auth/CarrierLogin";
 import CarrierRegister from "./pages/auth/CarrierRegister";
-import RouteOptimization from "./pages/RouteOptimization";
 
-import CarrierDashboard from "./pages/dashboard/CarrierDashboard";
 import AvailableShipments from "./pages/carrier/AvailableShipments";
-import Community from "./pages/Community";
-import Leaderboard from "./pages/Leaderboard";
 import ProfileSetup from "./pages/ProfileSetup";
 import Profile from "./pages/Profile";
-import PublicTransits from "./pages/PublicTransits";
 
 import CarrierHome from "./pages/carrier/Home";
 import CarrierTransit from "./pages/carrier/Transit";
@@ -32,6 +27,7 @@ import ShipperCommunity from "./pages/shipper/Community";
 import ShipperAnalytics from "./pages/shipper/Analytics";
 import ShipperPooling from "./pages/shipper/Pooling";
 import ShipperHome from "./pages/shipper/Home";
+import OperationsAnalytics from "./pages/ops/Analytics";
 const queryClient = new QueryClient();
 
 const App = () => (
@@ -49,12 +45,7 @@ const App = () => (
             <Route path="/auth/carrier/login" element={<CarrierLogin />} />
             <Route path="/auth/carrier/register" element={<CarrierRegister />} />
             
-            <Route path="/carrier-dashboard" element={<CarrierDashboard />} />
             <Route path="/carrier/available" element={<AvailableShipments />} />
-            <Route path="/community" element={<Community />} />
-            <Route path="/leaderboard" element={<Leaderboard />} />
-            <Route path="/transits" element={<PublicTransits />} />
-            <Route path="/route-optimization" element={<RouteOptimization />} />
             
             <Route path="/profile-setup" element={<ProfileSetup />} />
 <Route path="/profile" element={<Profile />} />
@@ -71,6 +62,7 @@ const App = () => (
 <Route path="/carrier/track" element={<CarrierTrack />} />
 <Route path="/carrier/community" element={<CarrierCommunity />} />
 <Route path="/carrier/analytics" element={<CarrierAnalytics />} />
+<Route path="/ops/analytics" element={<OperationsAnalytics />} />
 {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
 <Route path="*" element={<NotFound />} />
           </Routes>
